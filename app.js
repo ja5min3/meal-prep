@@ -496,14 +496,18 @@
     return figure;
   }
 
-  // 今天在兩週菜單裡排了哪一套；沒排或不在兩週內回傳 null。
+  // 菜單上「今天或之後最近一次要煮」的那一晚；兩週都過了或都沒排回傳 null。
   function todayPlan(today = dateValue(new Date())) {
     const start = parseDate(state.weekStart), now = parseDate(today);
     if (!start || !now) return null;
-    const offset = Math.round((now - start) / 86400000);
-    if (offset < 0 || offset > 13) return null;
-    const day = state.weeks[Math.floor(offset / 7)].days[offset % 7];
-    return day.enabled && setById[day.set] ? {set: setById[day.set], label: dayLabel(state.weekStart, offset), date: today} : null;
+    const todayOffset = Math.round((now - start) / 86400000);
+    for (let offset = Math.max(0, todayOffset); offset <= 13; offset++) {
+      const day = state.weeks[Math.floor(offset / 7)].days[offset % 7];
+      if (!day.enabled || !setById[day.set]) continue;
+      const date = parseDate(state.weekStart); date.setDate(date.getDate() + offset);
+      return {set: setById[day.set], label: dayLabel(state.weekStart, offset), date: dateValue(date), when: offset === todayOffset ? '今天' : '下一次煮'};
+    }
+    return null;
   }
   function ingredientsNode(recipes) {
     const node = panel('02 要準備的食材 · 四份');
@@ -524,9 +528,9 @@
     const matched = DATA.sets.find(s => s.recipes.length === state.selected.length && s.recipes.every(id => state.selected.includes(id)));
     if (state.pickedFrom && matched?.id === state.pickedFrom.set) today.append(el('p', `菜單上 ${state.pickedFrom.label} 排的是：${matched.name}`, 'completion'));
     else if (plan) today.append(el('p', `菜單上 ${plan.label} 排的是：${plan.set.name}`, 'completion'));
-    else today.append(el('p', '今天沒有排在菜單裡，下面是上次選的菜。', 'hint'));
+    else today.append(el('p', '菜單上之後沒有要煮的晚上，下面是上次選的菜。', 'hint'));
     if (!plan) { const go = el('a', '← 回菜單', 'back-link'); go.href = '#week'; today.append(go); }
-    if (plan && matched?.id !== plan.set.id) today.append(button(`改煮今天（${plan.label}）的「${plan.set.name}」`, () => { state.pickedFrom = null; state.selected = [...plan.set.recipes]; save(); tonightRefresh(); }, 'button secondary'));
+    if (plan && matched?.id !== plan.set.id) today.append(button(`改煮${plan.when}（${plan.label}）的「${plan.set.name}」`, () => { state.pickedFrom = null; state.selected = [...plan.set.recipes]; save(); tonightRefresh(); }, 'button secondary'));
     const main = selectedRecipes().find(r => r.role === 'main');
     today.append(photo(main, true));
     selectedRecipes().forEach(r => { const link = el('a', r.name, 'dish-link'); link.href = `#recipe/${r.id}`; today.append(link); });
@@ -789,7 +793,7 @@
     const banner = panel(null, 'today-banner');
     function drawBanner() {
       const plan = todayPlan(); banner.hidden = !plan; banner.replaceChildren();
-      if (plan) append(banner, el('p', `今天（${plan.label}）：${plan.set.name}`, 'completion'), button('看食譜做法 →', () => {
+      if (plan) append(banner, el('p', `${plan.when}（${plan.label}）：${plan.set.name}`, 'completion'), button('看食譜做法 →', () => {
         const current = todayPlan(); if (!current) { drawBanner(); return; }
         state.selected = [...current.set.recipes]; state.planApplied = current.date; state.pickedFrom = {label: current.label, set: current.set.id}; save(); location.hash = '#tonight';
       }, 'button primary'));
@@ -826,7 +830,7 @@
       const row = el('div', null, 'week-row'), dateText = dayLabel(state.weekStart, state.activeWeek * 7 + index);
       const menu = select(DATA.sets.map(s => [s.id, s.name]), day.set, value => { day.set = value; changed(); });
       menu.disabled = !day.enabled; menu.setAttribute('aria-label', `${dateText}套餐`);
-      const cook = button('看食譜做法 →', () => { state.selected = [...setById[day.set].recipes]; state.planApplied = dateValue(new Date()); state.pickedFrom = {label: dateText, set: day.set}; save(); location.hash = '#tonight'; }, 'button small');
+      const cook = button('看食譜做法 →', () => { state.selected = [...setById[day.set].recipes]; state.planApplied = todayPlan()?.date || null; state.pickedFrom = {label: dateText, set: day.set}; save(); location.hash = '#tonight'; }, 'button small');
       cook.hidden = !day.enabled; cook.setAttribute('aria-label', `${dateText}的食譜做法`);
       append(row, checkbox(dateText, day.enabled, enabled => { day.enabled = enabled; menu.disabled = !enabled; cook.hidden = !enabled; changed(); }), menu, cook); node.append(row);
     });
