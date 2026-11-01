@@ -167,3 +167,10 @@ summary { cursor: pointer; min-height: 44px; padding: 8px 0; font-weight: 650; }
 .plan-switch .button { flex: 1 1 80px; min-width: 0; padding: 10px 8px; }
 .week-row > * { min-width: 0; }
 .weekly-amount { display: block; color: var(--muted); font-size: 13px; margin-top: 5px; }
+.action-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; min-width: 0; }
+.action-row .button { flex: 1 1 130px; min-width: 0; overflow-wrap: anywhere; }
+.inline-confirm { margin: 16px 0; padding: 16px; border: 2px solid var(--accent); border-radius: 12px; background: var(--bg); overflow-wrap: anywhere; }
+.stock-updated { grid-column: 1 / -1; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.stock-stale { display: block; color: var(--warning); }
+.copy-helper { position: fixed; top: 0; left: 0; width: 1px !important; height: 1px; min-height: 0 !important; padding: 0 !important; opacity: 0; pointer-events: none; }
+.notice { max-height: 45vh; overflow-y: auto; overflow-wrap: anywhere; }

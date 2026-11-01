@@ -230,7 +230,91 @@
         missing: [...new Set(recipes.flatMap(r => r.nutrition.missing[key]))]}];
     }));
   }
-  window.MealPrep = {preparationSteps, schedule, ingredientsFor, coverage, shopping, shoppingPlan, autoWeek, autoPlan, planState, nextMonday, dayLabel, shares, nutrition};
+  const fmt = (number, digits = 1) => (Math.round((number + Number.EPSILON * Math.max(1, Math.abs(number))) * 10 ** digits) / 10 ** digits).toLocaleString('zh-TW', {maximumFractionDigits: digits});
+  function fridgeState(raw = {}) {
+    const fridge = {};
+    for (const id of Object.keys(DATA.foods)) {
+      const f = raw?.[id];
+      if (f && typeof f.has === 'boolean') fridge[id] = {has: f.has,
+        grams: f.grams === '' || f.grams == null ? '' : Number.isFinite(Number(f.grams)) && Number(f.grams) >= 0 ? Number(f.grams) : '',
+        updatedAt: parseDate(f.updatedAt) ? f.updatedAt : ''};
+    }
+    return fridge;
+  }
+  const stockSnapshot = fridge => Object.fromEntries(Object.entries(fridge).map(([id, stock]) => [id, {...stock}]));
+  function stockIsStale(food, stock, today = dateValue(new Date())) {
+    if (!stock?.has || !parseDate(stock.updatedAt) || !parseDate(today)) return false;
+    const daysOld = (Date.parse(`${today}T00:00:00Z`) - Date.parse(`${stock.updatedAt}T00:00:00Z`)) / 86400000;
+    return daysOld > (['肉品', '海鮮'].includes(food.shop) ? 3 : 7);
+  }
+  function shoppingText(items, bought, mode, start) {
+    const offset = mode === 'week2' ? 7 : 0;
+    const range = mode === 'total' ? '兩週合計' : mode === 'week2' ? '第 2 週' : '第 1 週';
+    const lines = [`採買清單｜${range} ${dayLabel(start, offset).split(' ')[0]}–${dayLabel(start, mode === 'total' ? 13 : offset + 6).split(' ')[0]}`];
+    const groups = new Map();
+    for (const item of items) {
+      if (bought[item.id] || (!item.pantry && !item.unknown && item.grams <= 0)) continue;
+      const food = DATA.foods[item.id], group = item.pantry ? '確認家裡還有' : food.shop;
+      if (!groups.has(group)) groups.set(group, []);
+      const amount = item.pantry ? '' : item.unknown ? `（家裡有，確認夠不夠 ${fmt(item.required)} g）`
+        : ` ${fmt(item.grams)} g${food.unit && food.unitG > 0 ? `（約 ${fmt(item.grams / food.unitG)} ${food.unit}）` : ''}`;
+      groups.get(group).push(food.name + amount);
+    }
+    for (const [group, rows] of [...groups].sort((a, b) => Number(a[0] === '確認家裡還有') - Number(b[0] === '確認家裡還有'))) lines.push(`【${group}】`, ...rows);
+    return lines.join('\n');
+  }
+  async function copyText(text, nav = navigator, doc = document) {
+    try { await nav.clipboard.writeText(text); return true; } catch (_) { /* 舊瀏覽器或權限限制，接著試傳統複製。 */ }
+    let area;
+    const focused = doc.activeElement;
+    try {
+      area = doc.createElement('textarea'); area.value = text; area.readOnly = true;
+      area.className = 'copy-helper'; area.setAttribute('aria-label', '暫存採買清單');
+      doc.body.append(area); area.focus(); area.select(); area.setSelectionRange(0, text.length);
+      return doc.execCommand('copy') === true;
+    } catch (_) { return false; }
+    finally { area?.remove(); focused?.focus({preventScroll: true}); }
+  }
+  function addBoughtStock(fridge, bought, items, mode, today = dateValue(new Date())) {
+    const next = stockSnapshot(fridge), marks = Object.fromEntries(Object.entries(bought).map(([key, values]) => [key, {...values}]));
+    const added = [];
+    for (const item of items) {
+      if (item.pantry || !bought[mode][item.id]) continue;
+      if (item.grams > 0) {
+        const stock = next[item.id];
+        const grams = (stock?.has ? Number(stock.grams) || 0 : 0) + item.grams;
+        next[item.id] = {has: true, grams, updatedAt: today}; added.push({id: item.id, grams: item.grams});
+      }
+      // 同食材跨範圍的舊勾選也已失效，避免切換週次重複加入。
+      for (const values of Object.values(marks)) delete values[item.id];
+    }
+    return {fridge: next, bought: marks, added};
+  }
+  function cookingStock(recipes, fridge) {
+    const deduct = [], unknown = [];
+    for (const [id, required] of Object.entries(ingredientsFor(recipes))) {
+      const stock = fridge[id];
+      if (DATA.foods[id].pantry || !stock?.has) continue;
+      if (stock.grams === '' || stock.grams == null) unknown.push({id, required});
+      else if (Number(stock.grams) > 0) deduct.push({id, required, grams: Math.min(required, Number(stock.grams))});
+    }
+    return {deduct, unknown};
+  }
+  function deductStock(fridge, items, today = dateValue(new Date())) {
+    const next = stockSnapshot(fridge);
+    for (const item of items) {
+      const grams = Math.max(0, next[item.id].grams - item.grams);
+      next[item.id] = {has: grams > 0, grams, updatedAt: today};
+    }
+    return next;
+  }
+  function clearStock(fridge, today = dateValue(new Date())) {
+    const next = stockSnapshot(fridge);
+    for (const id of Object.keys(next)) if (!DATA.foods[id].pantry) next[id] = {has: false, grams: '', updatedAt: today};
+    return next;
+  }
+  window.MealPrep = {preparationSteps, schedule, ingredientsFor, coverage, shopping, shoppingPlan, autoWeek, autoPlan, planState, nextMonday, dayLabel, shares, nutrition,
+    fridgeState, stockSnapshot, stockIsStale, shoppingText, copyText, addBoughtStock, cookingStock, deductStock, clearStock};
   if (typeof document === 'undefined') return;
 
   const $ = selector => document.querySelector(selector);
@@ -251,10 +335,7 @@
       Object.assign(base, planState(raw));
       base.favorites = Array.isArray(raw.favorites) ? raw.favorites.filter(id => byId[id]) : [];
       for (const r of DATA.recipes) if (typeof raw.notes?.[r.id] === 'string') base.notes[r.id] = raw.notes[r.id];
-      for (const id of Object.keys(DATA.foods)) {
-        const f = raw.fridge?.[id];
-        if (f && typeof f.has === 'boolean') base.fridge[id] = {has: f.has, grams: f.grams === '' || f.grams == null ? '' : Number.isFinite(Number(f.grams)) && Number(f.grams) >= 0 ? Number(f.grams) : ''};
-      }
+      base.fridge = fridgeState(raw.fridge);
       for (const who of ['me', 'mom']) if (Number.isFinite(raw.ratios?.[who])) base.ratios[who] = Math.max(0.6, Math.min(1.4, raw.ratios[who]));
       if (/^([01]\d|2[0-3]):[0-5]\d$/.test(raw.start)) base.start = raw.start;
       if (Array.isArray(raw.selected) && validSelection(raw.selected)) base.selected = raw.selected;
@@ -272,9 +353,10 @@
     return count('main') === 1 && count('side') <= 2 && count('starch') <= 1;
   }
   let state = readState();
+  let cookUndo = null, clearUndo = null, currentRoute = '';
   function save() {
-    try { localStorage.setItem('mealprep:v1', JSON.stringify(state)); }
-    catch (_) { notify('瀏覽器無法儲存資料（可能是隱私模式或空間不足）。目前仍可操作，關閉後可能不會保留。'); }
+    try { localStorage.setItem('mealprep:v1', JSON.stringify(state)); return true; }
+    catch (_) { notify('瀏覽器無法儲存資料（可能是隱私模式或空間不足）。目前仍可操作，關閉後可能不會保留。'); return false; }
   }
   // 所有文字都用 textContent；筆記、搜尋和食材數量不作 HTML 解讀。
   function el(tag, text, className) {
@@ -303,7 +385,41 @@
   }
   function panel(title, className = '') { const node = el('section', null, `panel ${className}`); if (title) node.append(el('h2', title)); return node; }
   function list(items, parent, className = '') { const ul = el('ul', null, className); items.filter(Boolean).forEach(t => ul.append(el('li', t))); parent.append(ul); }
-  const fmt = (number, digits = 1) => (Math.round((number + Number.EPSILON * Math.max(1, Math.abs(number))) * 10 ** digits) / 10 ** digits).toLocaleString('zh-TW', {maximumFractionDigits: digits});
+  const stockLine = item => `${DATA.foods[item.id].name} ${fmt(item.grams)} g`;
+  function confirmation(title) {
+    const node = el('section', null, 'inline-confirm'); node.tabIndex = -1;
+    node.setAttribute('role', 'region'); node.setAttribute('aria-label', title);
+    node.append(el('h3', title)); return node;
+  }
+  function cookingControls() {
+    const node = panel('煮好後，順手更新冰箱');
+    const pending = el('div'), undo = el('div');
+    function drawUndo() {
+      undo.replaceChildren();
+      if (cookUndo) append(undo, el('p', '已扣除庫存；離開這一頁後，就不能復原這次扣除。', 'muted'), button('復原', () => {
+        state.fridge = stockSnapshot(cookUndo); cookUndo = null; state.bought = emptyBought();
+        if (save()) notify('已復原上一次扣除前的冰箱庫存。');
+        pending.replaceChildren(); drawUndo();
+      }));
+    }
+    node.append(button('煮好了，從冰箱扣掉', () => {
+      pending.replaceChildren();
+      const {deduct, unknown} = cookingStock(selectedRecipes(), state.fridge);
+      const check = confirmation('確認這次要扣除的食材');
+      check.append(el('p', '依目前選好的菜扣除四份用量；最多扣到 0 g，歸零後會取消「有」。', 'muted'));
+      if (deduct.length) list(deduct.map(stockLine), check);
+      else check.append(el('p', '目前沒有可自動扣除的庫存。'));
+      if (unknown.length) { check.append(el('h3', '不會自動扣，請自己確認')); list(unknown.map(item => `${DATA.foods[item.id].name}（這次需 ${fmt(item.required)} g）`), check); }
+      const actions = el('div', null, 'action-row');
+      if (deduct.length) actions.append(button('確認扣除', () => {
+        cookUndo = stockSnapshot(state.fridge); state.fridge = deductStock(state.fridge, deduct); state.bought = emptyBought();
+        pending.replaceChildren(); drawUndo();
+        if (save()) notify(`已從冰箱扣除：${deduct.map(stockLine).join('、')}`);
+      }, 'button primary'));
+      actions.append(button('取消', () => pending.replaceChildren())); check.append(actions); pending.append(check); check.focus();
+    }, 'button secondary wide'));
+    append(node, pending, undo); drawUndo(); return node;
+  }
   const selectedRecipes = () => state.selected.map(id => byId[id]);
   function portionText(recipe, multiplier = 1) {
     const p = recipe.portion;
@@ -413,6 +529,7 @@
     selectedRecipes().forEach(r => { const link = el('a', r.name, 'dish-link'); link.href = `#recipe/${r.id}`; preview.append(link); });
     append(preview, el('h3', '每盒營養估算 · 平均分配'), nutritionNode(selectedRecipes(), 0.25), el('p', '四份總量固定，可在下方調整我與媽媽的比例。', 'muted'));
     append(layout, picker, preview); content.append(layout);
+    content.append(cookingControls());
     const scheduleOutput = el('div'); scheduleOutput.id = 'schedule-output'; content.append(scheduleOutput);
     content.append(boxesNode(), safetyNode(selectedRecipes()));
   }
@@ -569,6 +686,21 @@
   function fridgePage() {
     heading('先看看家裡有什麼', '冰箱裡，找靈感', '勾選食材，有秤重就填克數。沒填克數，配對先視為有這項食材，採買時再提醒確認。');
     const layout = el('div', null, 'fridge-layout'); const inventory = panel('家裡的食材'); const results = el('div');
+    const clearArea = el('div'), clearActions = el('div', null, 'action-row');
+    clearActions.append(button('全部清空', () => {
+      const check = confirmation('要清空冰箱紀錄嗎？');
+      check.append(el('p', '所有食材的「有」和克數都會清掉。在這一頁可復原一次；離開或再次修改庫存後就不能復原。'));
+      append(check, append(el('div', null, 'action-row'), button('確認清空', () => {
+        clearUndo = stockSnapshot(state.fridge); state.fridge = clearStock(state.fridge); state.bought = emptyBought();
+        const saved = save(); render(); if (saved) notify('冰箱紀錄已全部清空，可按「復原」。');
+      }, 'button primary'), button('取消', () => clearArea.replaceChildren())));
+      clearArea.replaceChildren(check); check.focus();
+    }));
+    const undoClear = button('復原', () => {
+      state.fridge = stockSnapshot(clearUndo); clearUndo = null; state.bought = emptyBought();
+      const saved = save(); render(); if (saved) notify('已復原清空前的冰箱紀錄。');
+    });
+    undoClear.hidden = !clearUndo; clearActions.append(undoClear); append(inventory, clearActions, clearArea);
     const groups = new Map();
     for (const [id, f] of Object.entries(DATA.foods)) {
       if (f.pantry) continue;
@@ -580,17 +712,28 @@
         const stock = state.fridge[id] || {has: false, grams: ''};
         const row = el('div', null, 'inventory-row');
         const amount = el('input'); amount.type = 'number'; amount.min = '0'; amount.step = 'any'; amount.inputMode = 'decimal'; amount.placeholder = '未秤重'; amount.value = stock.grams; amount.disabled = !stock.has; amount.setAttribute('aria-label', `${food.name}現有克數`);
+        const updated = el('small', null, 'stock-updated');
+        function drawUpdated() {
+          const current = state.fridge[id];
+          if (!current?.has) { updated.replaceChildren(); return; }
+          updated.replaceChildren(el('span', current?.updatedAt ? `更新 ${dayLabel(current.updatedAt, 0).split(' ')[0]}` : '更新日期未記錄'));
+          if (stockIsStale(food, current)) updated.append(el('span', '很久沒更新，確認一下還在不在', 'stock-stale'));
+        }
+        function inventoryChanged() {
+          clearUndo = null; undoClear.hidden = true; clearArea.replaceChildren();
+          state.bought = emptyBought(); save(); drawUpdated(); draw();
+        }
         const checked = checkbox(food.name, stock.has, has => {
           const value = amount.value;
           const grams = value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : '';
-          state.fridge[id] = {has, grams}; amount.value = grams; amount.setCustomValidity(''); amount.disabled = !has;
-          state.bought = emptyBought(); save(); draw();
+          state.fridge[id] = {has, grams, updatedAt: dateValue(new Date())}; amount.value = grams; amount.setCustomValidity(''); amount.disabled = !has;
+          inventoryChanged();
         });
         amount.addEventListener('input', () => {
           if (amount.value !== '' && (!Number.isFinite(Number(amount.value)) || Number(amount.value) < 0)) { amount.setCustomValidity('請填零以上的克數'); amount.reportValidity(); return; }
-          amount.setCustomValidity(''); state.fridge[id] = {has: true, grams: amount.value === '' ? '' : Number(amount.value)}; state.bought = emptyBought(); save(); draw();
+          amount.setCustomValidity(''); state.fridge[id] = {has: true, grams: amount.value === '' ? '' : Number(amount.value), updatedAt: dateValue(new Date())}; inventoryChanged();
         });
-        append(row, checked, append(el('div', null, 'grams-input'), amount, el('span', 'g'))); inventory.append(row);
+        drawUpdated(); append(row, checked, append(el('div', null, 'grams-input'), amount, el('span', 'g')), updated); inventory.append(row);
       }
     }
     function draw() {
@@ -637,7 +780,8 @@
     }, 'button secondary'));
     append(node, el('h3', '自動排'), auto, el('p', '兩週盡量不重複主菜，相鄰料理晚上避開相同蛋白質（含混合肉類）。排這一週會保留另一週並一起檢查。', 'muted'));
     const shoppingNode = panel();
-    function changed() { state.bought = emptyBought(); save(); drawShopping(); }
+    let transferSummary = '';
+    function changed() { transferSummary = ''; state.bought = emptyBought(); save(); drawShopping(); }
     week.days.forEach((day, index) => {
       const row = el('div', null, 'week-row'), dateText = dayLabel(state.weekStart, state.activeWeek * 7 + index);
       const menu = select(DATA.sets.map(s => [s.id, s.name]), day.set, value => { day.set = value; changed(); });
@@ -661,7 +805,35 @@
       const mode = state.shoppingMode, total = mode === 'total', bought = state.bought[mode];
       const items = shoppingPlan(state.weeks, state.fridge)[mode];
       shoppingNode.append(el('p', '冰箱庫存先供第 1 週使用，剩餘才扣第 2 週；兩週合計為扣庫存後的採買量。', 'muted'));
+      if (transferSummary) { const summary = el('p', transferSummary, 'hint'); summary.setAttribute('role', 'status'); shoppingNode.append(summary); }
       if (!items.length) { shoppingNode.append(el('p', '先勾選料理晚上或設定早餐批次，就會出現採買清單。', 'empty')); return; }
+      const actions = el('div', null, 'action-row'), manual = el('div');
+      async function exportList(share) {
+        shareButton.disabled = copyButton.disabled = true; manual.replaceChildren();
+        const text = shoppingText(items, bought, mode, state.weekStart);
+        try {
+          if (share && typeof navigator.share === 'function') {
+            try { await navigator.share({title: text.split('\n')[0], text}); return; }
+            catch (error) { if (error?.name === 'AbortError') return; }
+          }
+          const copied = await copyText(text);
+          if (copied) { notify('已複製，可以貼到 LINE、備忘錄或提醒事項'); return; }
+          if (!manual.isConnected) return;
+          const area = el('textarea'); area.value = text; area.readOnly = true; area.rows = 10;
+          const selectAll = () => { area.focus(); area.select(); area.setSelectionRange(0, area.value.length); };
+          append(manual, el('p', '瀏覽器無法自動複製，請全選下方文字後，長按選擇「拷貝」。', 'hint'), label('採買清單文字', area), button('全選文字', selectAll));
+          selectAll();
+        } finally { shareButton.disabled = copyButton.disabled = false; }
+      }
+      const shareButton = button('分享清單', () => exportList(true), 'button secondary');
+      const copyButton = button('複製清單', () => exportList(false));
+      append(actions, shareButton, copyButton, button('把已買的加進冰箱', () => {
+        const result = addBoughtStock(state.fridge, state.bought, items, mode);
+        state.fridge = result.fridge; state.bought = result.bought;
+        transferSummary = result.added.length ? `已加進冰箱：${result.added.map(stockLine).join('、')}` : '沒有需要加進冰箱的項目；請勾選有採買克數的食材，調味料不會加入。';
+        const saved = save(); drawShopping(); if (saved) notify(transferSummary);
+      }, 'button secondary'));
+      append(shoppingNode, actions, manual);
       const groups = new Map();
       for (const item of items) {
         const food = DATA.foods[item.id], shop = item.pantry ? '確認家裡還有' : food.shop;
@@ -695,8 +867,10 @@
     const link = el('a', 'HowToCook 原始專案'); link.href = 'https://github.com/Anduin2017/HowToCook'; link.target = '_blank'; link.rel = 'noopener noreferrer'; source.append(link);
     const estimates = panel('營養是估算，不是精密測量');
     list(['不同品牌、食材部位、加熱失水與剩餘醬汁，都會影響實際營養。', '資料庫沒測的營養素會標「部分缺值」。顯示值僅為已知部分合計；不將缺值當成 0。', '鹽的鈉與米酒熱量採理論值；青蔥以日本甜蔥資料代替。', '時間表依資料步驟順序與 attended 欄位排程；部分不用顧的步驟包含前處理、裝鍋或途中翻面，實際仍需短暫照看。', '分兩批烹調、糙米額外泡 1 小時等條件未含在既定分鐘數，請預留時間。'], estimates);
-    const privacy = panel('資料只存在這支手機的瀏覽器');
-    privacy.append(el('p', '收藏、筆記、冰箱、菜單與比例存在 localStorage；成品照存在 IndexedDB。不傳送到伺服器，也不會跨手機或瀏覽器同步。清除瀏覽器資料會一起清除紀錄。隱私模式、直接開檔或儲存空間限制可能無法保留資料，網站會提示；仍可使用其他功能。'));
+    const privacy = panel('資料存在哪裡');
+    privacy.append(el('p', '資料只存在這支手機的瀏覽器，而且只留在你現在使用的這個瀏覽器。收藏、筆記、冰箱、菜單、份量比例和成品照不會傳送到伺服器；換手機或換瀏覽器都不會同步。'));
+    privacy.append(el('p', 'iPhone 用 Safari 開啟時，超過 7 天沒用，資料可能會被清掉。建議把網站「加入主畫面」，之後從主畫面的圖示打開。'));
+    privacy.append(el('p', '清除瀏覽器資料會一起清除紀錄。隱私模式、直接開檔或儲存空間不足，也可能無法保留資料；網站會提示，仍可繼續操作。'));
     append(content, portion, safety, source, estimates, privacy);
   }
   function render() {
@@ -704,6 +878,7 @@
     activePhotoURLs.forEach(url => URL.revokeObjectURL(url)); activePhotoURLs = new Set();
     content.replaceChildren();
     const route = location.hash.slice(1) || 'tonight';
+    if (route !== currentRoute) { cookUndo = null; clearUndo = null; currentRoute = route; }
     const active = route.startsWith('recipe/') ? 'recipes' : route;
     document.querySelectorAll('.bottom-nav a').forEach(a => { const current = a.hash === `#${active}`; a.classList.toggle('active', current); if (current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     if (route.startsWith('recipe/')) recipePage(route.slice(7));
