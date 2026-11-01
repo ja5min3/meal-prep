@@ -116,7 +116,7 @@ summary { cursor: pointer; min-height: 44px; padding: 8px 0; font-weight: 650; }
 .grams-input input { padding: 8px !important; }
 .match-row { border-top: 1px solid var(--line); padding: 16px 0; }
 .coverage { color: var(--primary); font-size: 14px; }
-.week-row { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.week-row { display: grid; grid-template-columns: 145px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .shopping-item { border-bottom: 1px solid var(--line); padding: 14px 0; align-items: flex-start; }
 .shopping-item input { margin-top: 3px; }
 .bought span { text-decoration: line-through; color: var(--muted); }
@@ -174,3 +174,12 @@ summary { cursor: pointer; min-height: 44px; padding: 8px 0; font-weight: 650; }
 .stock-stale { display: block; color: var(--warning); }
 .copy-helper { position: fixed; top: 0; left: 0; width: 1px !important; height: 1px; min-height: 0 !important; padding: 0 !important; opacity: 0; pointer-events: none; }
 .notice { max-height: 45vh; overflow-y: auto; overflow-wrap: anywhere; }
+
+.button.small { padding: 8px 12px; font-size: 14px; white-space: nowrap; }
+.change-dish > summary { cursor: pointer; font-weight: 700; padding: 4px 0; }
+.change-dish[open] > summary { margin-bottom: 12px; }
+.ingredient-group { border-bottom: 1px solid var(--line); padding: 8px 0; }
+.ingredient-group > summary { cursor: pointer; font-weight: 700; }
+.ingredient-group ul { margin: 8px 0 0; padding-left: 20px; }
+.today-banner { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.today-banner .completion { margin: 0; }

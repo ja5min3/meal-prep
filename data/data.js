@@ -1827,143 +1827,6 @@ window.APP_DATA = {
       "proteins": []
     },
     {
-      "id": "roast-eggplant",
-      "name": "蒜香烤茄子",
-      "role": "side",
-      "cuisine": "燒烤風",
-      "image": "img/eggplant.jpg",
-      "imageNote": "HowToCook 社群照片",
-      "source": {
-        "type": "HowToCook",
-        "title": "烤茄子",
-        "path": "dishes/vegetable_dish/烤茄子/烤茄子.md",
-        "changes": "依原作者的改進建議先剖半；油從 20–30 ml 降到 10 g；改用小烤箱"
-      },
-      "ingredients": [
-        {
-          "food": "eggplant",
-          "g": 450,
-          "prep": "對半剖開，切面劃格子（不要劃破皮）",
-          "measure": "3 條"
-        },
-        {
-          "food": "garlic",
-          "g": 15,
-          "prep": "切末",
-          "measure": "3 瓣"
-        },
-        {
-          "food": "soy",
-          "g": 15,
-          "measure": "1 大匙"
-        },
-        {
-          "food": "chili",
-          "g": 10,
-          "prep": "切碎"
-        },
-        {
-          "food": "salt",
-          "g": 1,
-          "measure": "一小撮"
-        },
-        {
-          "food": "olive_oil",
-          "g": 10,
-          "measure": "2 茶匙（用刷的）"
-        }
-      ],
-      "steps": [
-        {
-          "text": "茄子剖半劃格子，切面刷薄薄一層油。蒜末、醬油、辣椒、鹽拌成醬。",
-          "min": 8,
-          "device": null,
-          "attended": true
-        },
-        {
-          "text": "小烤箱預熱 5 分鐘，茄子切面朝上烤 15 分鐘。",
-          "min": 20,
-          "device": "小烤箱",
-          "heat": "最高溫（約 200°C）",
-          "attended": false
-        },
-        {
-          "text": "抹上蒜末醬，再烤 5～7 分鐘。",
-          "min": 7,
-          "device": "小烤箱",
-          "heat": "最高溫（約 200°C）",
-          "attended": false,
-          "check": "筷子一壓就軟爛，蒜末微微金黃"
-        }
-      ],
-      "storage": {
-        "bento": true,
-        "fridgeDays": 2,
-        "reheat": "微波 600W 約 1 分鐘",
-        "note": "放不下 6 個半條就分兩批"
-      },
-      "safety": "蒜末一起烤熟，不是生蒜。",
-      "nutrition": {
-        "total": {
-          "kcal": 212.65,
-          "pro": 7.815,
-          "fat": 11.0,
-          "carb": 30.945,
-          "fib": 13.47,
-          "sat": 2.1399999999999997,
-          "chol": 0.0,
-          "na": 1153.55,
-          "sugar": 10.81
-        },
-        "serving": {
-          "kcal": 53.1625,
-          "pro": 1.95375,
-          "fat": 2.75,
-          "carb": 7.73625,
-          "fib": 3.3675,
-          "sat": 0.5349999999999999,
-          "chol": 0.0,
-          "na": 288.3875,
-          "sugar": 2.7025
-        },
-        "missing": {
-          "kcal": [],
-          "pro": [],
-          "fat": [
-            "soy"
-          ],
-          "carb": [],
-          "fib": [
-            "soy",
-            "olive_oil"
-          ],
-          "sat": [
-            "soy"
-          ],
-          "chol": [
-            "eggplant",
-            "garlic",
-            "soy",
-            "chili"
-          ],
-          "na": [
-            "olive_oil"
-          ],
-          "sugar": [
-            "soy",
-            "olive_oil"
-          ]
-        }
-      },
-      "rawGrams": 501,
-      "portion": {
-        "value": 1.014957264957265,
-        "unit": "拳",
-        "basis": "蔬菜生重 ÷ 1.3 推估熟重；每拳約 90 g"
-      },
-      "proteins": []
-    },
-    {
       "id": "broccoli",
       "name": "微波蒜香青花菜",
       "role": "side",
@@ -5495,10 +5358,9 @@ window.APP_DATA = {
   "sets": [
     {
       "id": "s1",
-      "name": "黑胡椒牛柳套餐",
+      "name": "黑胡椒牛柳配青花菜",
       "recipes": [
         "black-pepper-beef",
-        "roast-eggplant",
         "broccoli",
         "brown-rice"
       ]
@@ -5549,10 +5411,10 @@ window.APP_DATA = {
     },
     {
       "id": "s7",
-      "name": "薑燒豬配烤茄子",
+      "name": "薑燒豬配手撕高麗菜",
       "recipes": [
         "ginger-pork",
-        "roast-eggplant",
+        "cabbage",
         "brown-rice"
       ]
     },
@@ -5576,10 +5438,10 @@ window.APP_DATA = {
     },
     {
       "id": "s10",
-      "name": "蒜香優格雞腿配烤茄子",
+      "name": "蒜香優格雞腿配青花菜",
       "recipes": [
         "garlic-yogurt-chicken",
-        "roast-eggplant",
+        "broccoli",
         "brown-rice"
       ]
     },
@@ -5688,7 +5550,8 @@ window.APP_DATA = {
       "生食",
       "內臟",
       "香菇",
-      "蘑菇"
+      "蘑菇",
+      "茄子"
     ],
     "forbiddenFoodsNote": "所有食材都已人工檢查：沒有香菇、蘑菇或任何菇類，沒有內臟。『不吃生食』指生肉、生魚、生蛋：肉蛋都煮到全熟；生菜沙拉與生蒜可以吃（2026-11-01 確認）。",
     "palmFist": {
@@ -5916,25 +5779,6 @@ window.APP_DATA = {
         "sugar": null
       },
       "sourceName": "紅番茄"
-    },
-    "eggplant": {
-      "name": "長茄子",
-      "tfda": "E7300101",
-      "shop": "蔬菜",
-      "unit": "條",
-      "unitG": 150,
-      "nutrition100g": {
-        "kcal": 20.0,
-        "pro": 1.2,
-        "fat": 0.2,
-        "carb": 5.3,
-        "fib": 2.7,
-        "sat": 0.1,
-        "chol": null,
-        "na": 2.0,
-        "sugar": 2.3
-      },
-      "sourceName": "長茄子"
     },
     "broccoli": {
       "name": "青花菜（綠花椰）",

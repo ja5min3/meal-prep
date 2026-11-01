@@ -338,7 +338,11 @@
       base.fridge = fridgeState(raw.fridge);
       for (const who of ['me', 'mom']) if (Number.isFinite(raw.ratios?.[who])) base.ratios[who] = Math.max(0.6, Math.min(1.4, raw.ratios[who]));
       if (/^([01]\d|2[0-3]):[0-5]\d$/.test(raw.start)) base.start = raw.start;
-      if (Array.isArray(raw.selected) && validSelection(raw.selected)) base.selected = raw.selected;
+      if (typeof raw.planApplied === 'string') base.planApplied = raw.planApplied;
+      if (typeof raw.pickedFrom?.label === 'string' && setById[raw.pickedFrom.set]) base.pickedFrom = {label: raw.pickedFrom.label, set: raw.pickedFrom.set};
+      // 已下架的菜（例如茄子）直接拿掉，保留其餘選菜。
+      const kept = Array.isArray(raw.selected) ? raw.selected.filter(id => byId[id]) : null;
+      if (kept && validSelection(kept)) base.selected = kept;
       // 舊資料讀入後立即保存新格式；寫入失敗仍保留本次已搬移的選擇。
       if (!Array.isArray(raw.weeks) && (Array.isArray(raw.week) || raw.breakfast || raw.bought)) {
         try { localStorage.setItem('mealprep:v1', JSON.stringify(base)); }
@@ -392,7 +396,7 @@
     node.append(el('h3', title)); return node;
   }
   function cookingControls() {
-    const node = panel('煮好後，順手更新冰箱');
+    const node = panel('05 煮好後，順手更新冰箱');
     const pending = el('div'), undo = el('div');
     function drawUndo() {
       undo.replaceChildren();
@@ -492,55 +496,82 @@
     return figure;
   }
 
+  // 今天在兩週菜單裡排了哪一套；沒排或不在兩週內回傳 null。
+  function todayPlan(today = dateValue(new Date())) {
+    const start = parseDate(state.weekStart), now = parseDate(today);
+    if (!start || !now) return null;
+    const offset = Math.round((now - start) / 86400000);
+    if (offset < 0 || offset > 13) return null;
+    const day = state.weeks[Math.floor(offset / 7)].days[offset % 7];
+    return day.enabled && setById[day.set] ? {set: setById[day.set], label: dayLabel(state.weekStart, offset), date: today} : null;
+  }
+  function ingredientsNode(recipes) {
+    const node = panel('02 要準備的食材 · 四份');
+    for (const r of recipes) {
+      const box = el('details', null, 'ingredient-group'); box.open = true;
+      const title = el('summary'); const link = el('a', r.name, 'dish-link'); link.href = `#recipe/${r.id}`; title.append(link); box.append(title);
+      list(r.ingredients.map(i => `${DATA.foods[i.food].name} ${i.g} g${[i.measure, i.prep].filter(Boolean).length ? `（${[i.measure, i.prep].filter(Boolean).join('；')}）` : ''}`), box);
+      node.append(box);
+    }
+    node.append(el('p', '點菜名可看完整食譜、照片與營養。', 'muted'));
+    return node;
+  }
   function tonight() {
+    const plan = todayPlan();
+    if (plan && state.planApplied !== plan.date) { state.pickedFrom = null; state.selected = [...plan.set.recipes]; state.planApplied = plan.date; save(); }
     heading('每天的一頓，好好照顧自己', '今晚，煮點什麼？', '一次準備四盒，今晚和明天的午餐一起顧好。');
-    const layout = el('div', null, 'tonight-layout');
-    const picker = panel('01 選好今晚的菜');
+    const today = panel('01 今晚的菜', 'meal-preview');
     const matched = DATA.sets.find(s => s.recipes.length === state.selected.length && s.recipes.every(id => state.selected.includes(id)));
-    const presets = select([['', '自己組合'], ...DATA.sets.map(s => [s.id, s.name])], matched?.id || '', id => {
-      if (id) { state.selected = [...setById[id].recipes]; save(); tonightRefresh(); }
-    });
-    picker.append(label('懶得想？選一個套餐', presets));
+    if (state.pickedFrom && matched?.id === state.pickedFrom.set) today.append(el('p', `菜單上 ${state.pickedFrom.label} 排的是：${matched.name}`, 'completion'));
+    else if (plan) today.append(el('p', `菜單上 ${plan.label} 排的是：${plan.set.name}`, 'completion'));
+    else today.append(el('p', '今天沒有排在菜單裡，下面是上次選的菜。', 'hint'));
+    if (!plan) { const go = el('a', '← 回菜單', 'back-link'); go.href = '#week'; today.append(go); }
+    if (plan && matched?.id !== plan.set.id) today.append(button(`改煮今天（${plan.label}）的「${plan.set.name}」`, () => { state.pickedFrom = null; state.selected = [...plan.set.recipes]; save(); tonightRefresh(); }, 'button secondary'));
     const main = selectedRecipes().find(r => r.role === 'main');
+    today.append(photo(main, true));
+    selectedRecipes().forEach(r => { const link = el('a', r.name, 'dish-link'); link.href = `#recipe/${r.id}`; today.append(link); });
+    append(today, el('h3', '每盒營養估算 · 平均分配'), nutritionNode(selectedRecipes(), 0.25));
+    const picker = el('details', null, 'panel change-dish');
+    picker.append(el('summary', '想換菜？自己挑'));
+    const presets = select([['', '自己組合'], ...DATA.sets.map(s => [s.id, s.name])], matched?.id || '', id => {
+      if (id) { state.pickedFrom = null; state.selected = [...setById[id].recipes]; save(); tonightRefresh(); }
+    });
+    picker.append(label('選一個套餐', presets));
     picker.append(label('主菜 · 選 1 道', select(DATA.recipes.filter(r => r.role === 'main').map(r => [r.id, r.name]), main.id, id => {
-      state.selected = state.selected.filter(k => byId[k].role !== 'main' && (!byId[id].hasStarch || byId[k].role !== 'starch') && (!byId[id].hasVeg || byId[k].role !== 'side'));
+      state.pickedFrom = null; state.selected = state.selected.filter(k => byId[k].role !== 'main' && (!byId[id].hasStarch || byId[k].role !== 'starch') && (!byId[id].hasVeg || byId[k].role !== 'side'));
       state.selected.unshift(id); save(); tonightRefresh();
     })));
     const sides = el('fieldset'); sides.append(el('legend', '配菜 · 最多 2 道'));
     for (const r of DATA.recipes.filter(r => r.role === 'side')) sides.append(checkbox(r.name, state.selected.includes(r.id), checked => {
       if (checked && selectedRecipes().filter(x => x.role === 'side').length === 2) { notify('配菜最多選 2 道。'); tonightRefresh(); return; }
-      state.selected = checked ? [...state.selected, r.id] : state.selected.filter(id => id !== r.id); save(); tonightRefresh();
+      state.pickedFrom = null; state.selected = checked ? [...state.selected, r.id] : state.selected.filter(id => id !== r.id); save(); tonightRefresh();
     }));
     picker.append(sides);
     picker.append(label('主食 · 可不選', select([['', '這餐不加主食'], ...DATA.recipes.filter(r => r.role === 'starch').map(r => [r.id, r.name])], selectedRecipes().find(r => r.role === 'starch')?.id || '', id => {
-      state.selected = state.selected.filter(k => byId[k].role !== 'starch'); if (id) state.selected.push(id); save(); tonightRefresh();
+      state.pickedFrom = null; state.selected = state.selected.filter(k => byId[k].role !== 'starch'); if (id) state.selected.push(id); save(); tonightRefresh();
     })));
     if (main.hasStarch) picker.append(el('p', '這道主菜已含澱粉，預設不再加主食。', 'hint'));
     if (main.hasVeg) picker.append(el('p', '這道主菜已含大量蔬菜，預設不再加配菜；仍可自行勾選。', 'hint'));
+    if (!plan) picker.open = true;
+    append(content, today, picker, ingredientsNode(selectedRecipes()));
     const time = el('input'); time.type = 'time'; time.value = state.start;
-    time.addEventListener('change', () => { if (time.value) { state.start = time.value; save(); $('#schedule-output').replaceChildren(); } else time.value = state.start; });
-    append(picker, label('幾點開始煮？', time), button('排時間表 →', () => {
-      const output = $('#schedule-output'); output.replaceChildren();
-      try { output.append(scheduleNode(schedule(selectedRecipes()))); output.scrollIntoView({behavior: 'smooth', block: 'start'}); }
-      catch (error) { notify(error.message); }
-    }, 'button primary wide'));
-    const preview = panel('今晚的四盒', 'meal-preview');
-    preview.append(photo(main, true));
-    selectedRecipes().forEach(r => { const link = el('a', r.name, 'dish-link'); link.href = `#recipe/${r.id}`; preview.append(link); });
-    append(preview, el('h3', '每盒營養估算 · 平均分配'), nutritionNode(selectedRecipes(), 0.25), el('p', '四份總量固定，可在下方調整我與媽媽的比例。', 'muted'));
-    append(layout, picker, preview); content.append(layout);
-    content.append(cookingControls());
-    const scheduleOutput = el('div'); scheduleOutput.id = 'schedule-output'; content.append(scheduleOutput);
-    content.append(boxesNode(), safetyNode(selectedRecipes()));
+    const scheduleOutput = el('div'); scheduleOutput.id = 'schedule-output';
+    const drawSchedule = () => {
+      scheduleOutput.replaceChildren();
+      try { scheduleOutput.append(scheduleNode(schedule(selectedRecipes()), label('幾點開始煮？', time))); } catch (error) { notify(error.message); }
+    };
+    time.addEventListener('change', () => { if (time.value) { state.start = time.value; save(); drawSchedule(); } else time.value = state.start; });
+    content.append(scheduleOutput); drawSchedule();
+    content.append(boxesNode(), cookingControls(), safetyNode(selectedRecipes()));
   }
   function tonightRefresh() { render(); }
   function timeAt(minutes) {
     const [h, m] = state.start.split(':').map(Number); const total = h * 60 + m + minutes;
     return `${total >= 1440 ? `翌${Math.floor(total / 1440) > 1 ? Math.floor(total / 1440) : ''}日 ` : ''}${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
   }
-  function scheduleNode(result) {
-    const node = panel('02 照著時間，一步一步煮');
-    append(node, el('p', `${timeAt(result.total)} 全部完成 · 約 ${result.total} 分鐘`, 'completion'), el('p', '含最後分裝 10 分鐘。時間為估算；分批、額外泡米及途中翻面可能需要加時。⏳ 步驟仍請依文字查看與翻動。', 'hint'));
+  function scheduleNode(result, extra) {
+    const node = panel('03 做法 · 照著時間一步一步煮');
+    append(node, extra, el('p', `${timeAt(result.total)} 全部完成 · 約 ${result.total} 分鐘`, 'completion'), el('p', '含最後分裝 10 分鐘。時間為估算；分批、額外泡米及途中翻面可能需要加時。⏳ 步驟仍請依文字查看與翻動。', 'hint'));
     if (result.advance.length) {
       const prep = el('section', null, 'advance-preparation');
       append(prep, el('h3', '提前準備'), el('p', '以下工作請在開始煮晚餐前完成，不計入今晚分鐘數。依各道菜的原順序操作；冷藏設備請依步驟文字準備。', 'muted'));
@@ -566,7 +597,7 @@
     return node;
   }
   function boxesNode() {
-    const node = panel('03 四盒怎麼分');
+    const node = panel('04 四盒怎麼分');
     node.append(el('p', '兩人的倍數會換算成比例，四盒合計始終是整鍋的 100%。同一人的晚餐與便當等量。', 'muted'));
     const controls = el('div', null, 'two-col');
     const boxes = el('div', null, 'box-grid');
@@ -744,7 +775,7 @@
         for (const match of matches) {
           const row = el('article', null, 'match-row');
           append(row, el('h3', match.item.name), el('strong', `食材覆蓋 ${Math.round(match.ratio * 100)}%`, 'coverage'), el('p', match.missing.length ? `還缺：${match.missing.map(m => `${DATA.foods[m.id].name} ${fmt(m.grams, 0)} g`).join('、')}` : '食材已備齊；未秤重的項目請再確認份量。', 'muted'));
-          if (type === 'sets') row.append(button('今晚就煮這套', () => { state.selected = [...match.item.recipes]; save(); location.hash = '#tonight'; }, 'button secondary'));
+          if (type === 'sets') row.append(button('今晚就煮這套', () => { state.pickedFrom = null; state.selected = [...match.item.recipes]; save(); location.hash = '#tonight'; }, 'button secondary'));
           else { const link = el('a', '看食譜 →'); link.href = `#recipe/${match.item.id}`; row.append(link); }
           section.append(row);
         }
@@ -754,7 +785,16 @@
     append(layout, inventory, results); content.append(layout); draw();
   }
   function weekPage() {
-    heading('少想一點，每天吃好一點', '兩週的餐桌', '每週分開選晚餐與早餐，採買可看單週或兩週合計；每晚都是四份。');
+    heading('少想一點，每天吃好一點', '兩週的餐桌', '先排好哪幾晚煮什麼 → 按「看食譜做法」就有食材和步驟；採買清單在最下面。');
+    const banner = panel(null, 'today-banner');
+    function drawBanner() {
+      const plan = todayPlan(); banner.hidden = !plan; banner.replaceChildren();
+      if (plan) append(banner, el('p', `今天（${plan.label}）：${plan.set.name}`, 'completion'), button('看食譜做法 →', () => {
+        const current = todayPlan(); if (!current) { drawBanner(); return; }
+        state.selected = [...current.set.recipes]; state.planApplied = current.date; state.pickedFrom = {label: current.label, set: current.set.id}; save(); location.hash = '#tonight';
+      }, 'button primary'));
+    }
+    drawBanner(); content.append(banner);
     const node = panel('哪幾晚要煮？');
     function switcher(options, current, action, name) {
       const group = el('div', null, 'plan-switch'); group.setAttribute('role', 'group'); group.setAttribute('aria-label', name);
@@ -781,12 +821,14 @@
     append(node, el('h3', '自動排'), auto, el('p', '兩週盡量不重複主菜，相鄰料理晚上避開相同蛋白質（含混合肉類）。排這一週會保留另一週並一起檢查。', 'muted'));
     const shoppingNode = panel();
     let transferSummary = '';
-    function changed() { transferSummary = ''; state.bought = emptyBought(); save(); drawShopping(); }
+    function changed() { transferSummary = ''; state.bought = emptyBought(); save(); drawBanner(); drawShopping(); }
     week.days.forEach((day, index) => {
       const row = el('div', null, 'week-row'), dateText = dayLabel(state.weekStart, state.activeWeek * 7 + index);
       const menu = select(DATA.sets.map(s => [s.id, s.name]), day.set, value => { day.set = value; changed(); });
       menu.disabled = !day.enabled; menu.setAttribute('aria-label', `${dateText}套餐`);
-      append(row, checkbox(dateText, day.enabled, enabled => { day.enabled = enabled; menu.disabled = !enabled; changed(); }), menu); node.append(row);
+      const cook = button('看食譜做法 →', () => { state.selected = [...setById[day.set].recipes]; state.planApplied = dateValue(new Date()); state.pickedFrom = {label: dateText, set: day.set}; save(); location.hash = '#tonight'; }, 'button small');
+      cook.hidden = !day.enabled; cook.setAttribute('aria-label', `${dateText}的食譜做法`);
+      append(row, checkbox(dateText, day.enabled, enabled => { day.enabled = enabled; menu.disabled = !enabled; cook.hidden = !enabled; changed(); }), menu, cook); node.append(row);
     });
     const breakfast = panel(`第 ${state.activeWeek + 1} 週早餐備餐`);
     breakfast.append(el('p', '每種早餐可選 0–3 批，每批 4 罐；0 批表示不做。食材會加進該週採買清單。', 'muted'));
@@ -877,12 +919,12 @@
     renderEpoch++;
     activePhotoURLs.forEach(url => URL.revokeObjectURL(url)); activePhotoURLs = new Set();
     content.replaceChildren();
-    const route = location.hash.slice(1) || 'tonight';
+    const route = location.hash.slice(1) || 'week';
     if (route !== currentRoute) { cookUndo = null; clearUndo = null; currentRoute = route; }
     const active = route.startsWith('recipe/') ? 'recipes' : route;
     document.querySelectorAll('.bottom-nav a').forEach(a => { const current = a.hash === `#${active}`; a.classList.toggle('active', current); if (current) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
     if (route.startsWith('recipe/')) recipePage(route.slice(7));
-    else ({tonight, recipes: recipesPage, fridge: fridgePage, week: weekPage, about: aboutPage}[route] || tonight)();
+    else ({tonight, recipes: recipesPage, fridge: fridgePage, week: weekPage, about: aboutPage}[route] || weekPage)();
     document.title = `${content.querySelector('h1')?.textContent || '四盒備餐'}｜好好吃飯`;
   }
   window.addEventListener('hashchange', () => { render(); window.scrollTo(0, 0); content.focus({preventScroll: true}); });
