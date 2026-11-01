@@ -116,7 +116,7 @@ summary { cursor: pointer; min-height: 44px; padding: 8px 0; font-weight: 650; }
 .grams-input input { padding: 8px !important; }
 .match-row { border-top: 1px solid var(--line); padding: 16px 0; }
 .coverage { color: var(--primary); font-size: 14px; }
-.week-row { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.week-row { display: grid; grid-template-columns: 145px minmax(0, 1fr); gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .shopping-item { border-bottom: 1px solid var(--line); padding: 14px 0; align-items: flex-start; }
 .shopping-item input { margin-top: 3px; }
 .bought span { text-decoration: line-through; color: var(--muted); }
@@ -149,7 +149,7 @@ summary { cursor: pointer; min-height: 44px; padding: 8px 0; font-weight: 650; }
   .nutrient { padding: 9px 7px; }
   .nutrient strong { font-size: 14px; }
   .completion { padding: 16px; font-size: 21px; }
-  .week-row { grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+  .week-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .week-row select { font-size: 14px; padding: 10px 6px; }
   .bottom-nav { gap: 2px; padding-left: 5px; padding-right: 5px; border-radius: 16px 16px 0 0; }
   .bottom-nav a { font-size: 11px; }
@@ -162,3 +162,8 @@ summary { cursor: pointer; min-height: 44px; padding: 8px 0; font-weight: 650; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 
 .food-note { display: block; margin-top: 6px; font-size: 13px; line-height: 1.6; color: var(--muted); }
+
+.plan-switch { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; min-width: 0; }
+.plan-switch .button { flex: 1 1 80px; min-width: 0; padding: 10px 8px; }
+.week-row > * { min-width: 0; }
+.weekly-amount { display: block; color: var(--muted); font-size: 13px; margin-top: 5px; }

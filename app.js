@@ -125,23 +125,103 @@
       return {id, required, grams: Math.max(0, required - available), unknown, pantry: !!food.pantry};
     });
   }
-  function autoWeek(week) {
-    let previous = null;
-    const counts = {};
-    return week.map(day => {
-      if (!day.enabled) return {...day};
-      const mainOf = s => byId[s.recipes.find(id => byId[id].role === 'main')];
-      const eligible = DATA.sets.filter(s => {
-        const main = mainOf(s);
-        return !previous || (main.id !== previous.id && !main.proteins.some(p => previous.proteins.includes(p)));
-      });
-      const candidates = eligible.length ? eligible : DATA.sets;
-      const chosen = [...candidates].sort((a, b) => (counts[a.id] || 0) - (counts[b.id] || 0) || a.id.localeCompare(b.id))[0];
-      counts[chosen.id] = (counts[chosen.id] || 0) + 1;
-      previous = mainOf(chosen);
-      return {...day, set: chosen.id};
-    });
+  // 用本地中午做日曆加法，避免 UTC 或夏令時間讓日期偏移。
+  function dateValue(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   }
+  function parseDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const date = new Date(`${value}T12:00:00`);
+    return Number.isFinite(date.getTime()) && dateValue(date) === value ? date : null;
+  }
+  function nextMonday(now = new Date()) {
+    const date = new Date(now); date.setHours(12, 0, 0, 0);
+    date.setDate(date.getDate() + ((8 - date.getDay()) % 7 || 7));
+    return dateValue(date);
+  }
+  function dayLabel(start, offset) {
+    const date = parseDate(start);
+    if (!date) return '';
+    date.setDate(date.getDate() + offset);
+    return `${date.getMonth() + 1}/${date.getDate()} ${days[(date.getDay() + 6) % 7]}`;
+  }
+  const emptyBought = () => ({week1: {}, week2: {}, total: {}});
+  const newWeek = (enabled = true) => ({days: days.map((_, i) => ({enabled: enabled && i < 3, set: DATA.sets[i].id})), breakfast: {}});
+  function planState(raw = {}) {
+    const modern = Array.isArray(raw.weeks);
+    const weeks = [newWeek(), newWeek(false)];
+    weeks.forEach((week, index) => {
+      const source = modern ? raw.weeks[index] : index === 0 ? {days: raw.week, breakfast: raw.breakfast} : null;
+      if (Array.isArray(source?.days) && source.days.length === 7) week.days = source.days.map((day, i) => ({enabled: !!day?.enabled, set: setById[day?.set] ? day.set : week.days[i].set}));
+      for (const r of DATA.recipes.filter(r => r.role === 'breakfast')) week.breakfast[r.id] = breakfastBatches(source?.breakfast?.[r.id]);
+    });
+    const bought = emptyBought();
+    for (const mode of Object.keys(bought)) for (const id of Object.keys(DATA.foods)) {
+      const source = modern ? raw.bought?.[mode] : mode === 'week1' ? raw.bought : null;
+      if (source?.[id] === true) bought[mode][id] = true;
+    }
+    return {weeks, bought, weekStart: parseDate(raw.weekStart) ? raw.weekStart : nextMonday(),
+      activeWeek: raw.activeWeek === 1 ? 1 : 0, shoppingMode: ['week1', 'week2', 'total'].includes(raw.shoppingMode) ? raw.shoppingMode : 'week1'};
+  }
+  function shoppingPlan(weeks, fridge) {
+    const required = weeks.map(week => Object.fromEntries(shopping(week.days, {}, week.breakfast).map(item => [item.id, item.required])));
+    const result = {week1: [], week2: [], total: []};
+    for (const id of new Set(required.flatMap(totals => Object.keys(totals)))) {
+      const pantry = !!DATA.foods[id].pantry, stock = fridge[id];
+      const unknown = !pantry && !!stock?.has && (stock.grams === '' || stock.grams == null);
+      let remaining = !pantry && stock?.has && !unknown ? Math.max(0, Number(stock.grams) || 0) : 0;
+      const parts = required.map(totals => {
+        const need = totals[id] || 0, used = Math.min(need, remaining);
+        remaining -= used;
+        return {id, required: need, grams: need - used, unknown, pantry};
+      });
+      parts.forEach((item, i) => { if (item.required) result[`week${i + 1}`].push(item); });
+      result.total.push({id, pantry, unknown, required: parts[0].required + parts[1].required,
+        grams: parts[0].grams + parts[1].grams, weeklyGrams: parts.map(item => item.grams)});
+    }
+    return result;
+  }
+  function autoPlan(weeks, target = 'both') {
+    const result = weeks.map(week => ({...week, days: week.days.map(day => ({...day})), breakfast: {...week.breakfast}}));
+    const slots = result.flatMap((week, index) => week.days.filter(day => day.enabled).map(day => ({day, editable: target === 'both' || target === index})));
+    const mainOf = meal => byId[meal.recipes.find(id => byId[id].role === 'main')];
+    const meals = [...new Map(DATA.sets.map(meal => [mainOf(meal).id, meal])).values()];
+    // 現有資料的 Costco 烤雞標籤也屬於雞肉，混合蛋白質仍全部檢查。
+    const proteins = main => main.proteins.map(p => /雞/.test(p) ? '雞肉' : p);
+    const compatible = (a, b) => !a || !b || (a.id !== b.id && !proteins(a).some(p => proteins(b).includes(p)));
+    const counts = new Map();
+    for (const slot of slots.filter(slot => !slot.editable)) {
+      const id = mainOf(setById[slot.day.set]).id;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    }
+    const fixedRepeats = [...counts.values()].reduce((sum, n) => sum + n - 1, 0);
+    const repeatBudget = Math.max(0, slots.length - meals.length - fixedRepeats);
+    const failed = new Set();
+    function place(index, previous, repeats) {
+      if (index === slots.length) return true;
+      const slot = slots[index];
+      if (!slot.editable) {
+        const main = mainOf(setById[slot.day.set]);
+        if (index > 0 && slots[index - 1].editable && !compatible(previous, main)) return false;
+        return place(index + 1, main, repeats);
+      }
+      const key = `${index}|${previous?.id}|${repeats}|${meals.map(meal => counts.get(mainOf(meal).id) || 0).join(',')}`;
+      if (failed.has(key)) return false;
+      const candidates = meals.filter(meal => compatible(previous, mainOf(meal)))
+        .sort((a, b) => (counts.get(mainOf(a).id) || 0) - (counts.get(mainOf(b).id) || 0) || a.id.localeCompare(b.id));
+      for (const meal of candidates) {
+        const main = mainOf(meal), count = counts.get(main.id) || 0, nextRepeats = repeats + Number(count > 0);
+        if (nextRepeats > repeatBudget) continue;
+        counts.set(main.id, count + 1); slot.day.set = meal.id;
+        if (place(index + 1, main, nextRepeats)) return true;
+        if (count) counts.set(main.id, count); else counts.delete(main.id);
+      }
+      failed.add(key); return false;
+    }
+    if (!place(0, null, 0)) throw new Error('目前無法同時避開重複主菜與連續蛋白質；請改用「排兩週」或減少料理晚數。');
+    return result;
+  }
+  function autoWeek(week) { return autoPlan([{days: week, breakfast: {}}])[0].days; }
   function shares(me, mom) { return [me, mom, me, mom].map(n => n / (2 * (me + mom))); }
   function nutrition(recipes, fraction) {
     return Object.fromEntries(Object.keys(DATA.nutrients).map(key => {
@@ -150,7 +230,7 @@
         missing: [...new Set(recipes.flatMap(r => r.nutrition.missing[key]))]}];
     }));
   }
-  window.MealPrep = {preparationSteps, schedule, ingredientsFor, coverage, shopping, autoWeek, shares, nutrition};
+  window.MealPrep = {preparationSteps, schedule, ingredientsFor, coverage, shopping, shoppingPlan, autoWeek, autoPlan, planState, nextMonday, dayLabel, shares, nutrition};
   if (typeof document === 'undefined') return;
 
   const $ = selector => document.querySelector(selector);
@@ -161,25 +241,28 @@
     node.textContent = message; node.hidden = false;
     clearTimeout(toastTimer); toastTimer = setTimeout(() => { node.hidden = true; }, 6500);
   }
-  const defaults = () => ({favorites: [], notes: {}, fridge: {}, bought: {}, ratios: {me: 1, mom: 1}, start: '18:00',
-    selected: [...DATA.sets[0].recipes], breakfast: {}, week: days.map((_, i) => ({enabled: i < 3, set: DATA.sets[i].id}))});
+  const defaults = () => ({favorites: [], notes: {}, fridge: {}, ratios: {me: 1, mom: 1}, start: '18:00',
+    selected: [...DATA.sets[0].recipes], ...planState()});
   function readState() {
     const base = defaults();
     try {
       const raw = JSON.parse(localStorage.getItem('mealprep:v1') || 'null');
       if (!raw || typeof raw !== 'object') return base;
-      for (const r of DATA.recipes.filter(r => r.role === 'breakfast')) base.breakfast[r.id] = breakfastBatches(raw.breakfast?.[r.id]);
+      Object.assign(base, planState(raw));
       base.favorites = Array.isArray(raw.favorites) ? raw.favorites.filter(id => byId[id]) : [];
       for (const r of DATA.recipes) if (typeof raw.notes?.[r.id] === 'string') base.notes[r.id] = raw.notes[r.id];
       for (const id of Object.keys(DATA.foods)) {
         const f = raw.fridge?.[id];
         if (f && typeof f.has === 'boolean') base.fridge[id] = {has: f.has, grams: f.grams === '' || f.grams == null ? '' : Number.isFinite(Number(f.grams)) && Number(f.grams) >= 0 ? Number(f.grams) : ''};
-        if (raw.bought?.[id] === true) base.bought[id] = true;
       }
       for (const who of ['me', 'mom']) if (Number.isFinite(raw.ratios?.[who])) base.ratios[who] = Math.max(0.6, Math.min(1.4, raw.ratios[who]));
       if (/^([01]\d|2[0-3]):[0-5]\d$/.test(raw.start)) base.start = raw.start;
       if (Array.isArray(raw.selected) && validSelection(raw.selected)) base.selected = raw.selected;
-      if (Array.isArray(raw.week) && raw.week.length === 7) base.week = raw.week.map((d, i) => ({enabled: !!d?.enabled, set: setById[d?.set] ? d.set : base.week[i].set}));
+      // 舊資料讀入後立即保存新格式；寫入失敗仍保留本次已搬移的選擇。
+      if (!Array.isArray(raw.weeks) && (Array.isArray(raw.week) || raw.breakfast || raw.bought)) {
+        try { localStorage.setItem('mealprep:v1', JSON.stringify(base)); }
+        catch (_) { notify('舊菜單已載入第 1 週，但瀏覽器無法保存搬移結果；目前仍可正常使用。'); }
+      }
       return base;
     } catch (_) { notify('無法讀取儲存資料，仍可正常使用；這次變更可能無法保留。'); return base; }
   }
@@ -501,11 +584,11 @@
           const value = amount.value;
           const grams = value !== '' && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : '';
           state.fridge[id] = {has, grams}; amount.value = grams; amount.setCustomValidity(''); amount.disabled = !has;
-          state.bought = {}; save(); draw();
+          state.bought = emptyBought(); save(); draw();
         });
         amount.addEventListener('input', () => {
           if (amount.value !== '' && (!Number.isFinite(Number(amount.value)) || Number(amount.value) < 0)) { amount.setCustomValidity('請填零以上的克數'); amount.reportValidity(); return; }
-          amount.setCustomValidity(''); state.fridge[id] = {has: true, grams: amount.value === '' ? '' : Number(amount.value)}; state.bought = {}; save(); draw();
+          amount.setCustomValidity(''); state.fridge[id] = {has: true, grams: amount.value === '' ? '' : Number(amount.value)}; state.bought = emptyBought(); save(); draw();
         });
         append(row, checked, append(el('div', null, 'grams-input'), amount, el('span', 'g'))); inventory.append(row);
       }
@@ -528,22 +611,45 @@
     append(layout, inventory, results); content.append(layout); draw();
   }
   function weekPage() {
-    heading('少想一點，每天吃好一點', '這週的餐桌', '選幾晚在家煮，採買份量自動加總；每晚都是四份。');
+    heading('少想一點，每天吃好一點', '兩週的餐桌', '每週分開選晚餐與早餐，採買可看單週或兩週合計；每晚都是四份。');
     const node = panel('哪幾晚要煮？');
-    node.append(button('自動排一週 ↻', () => { state.week = autoWeek(state.week); state.bought = {}; save(); render(); }, 'button primary'));
-    node.append(el('p', '自動排會避開相鄰料理晚上的同一道主菜，也避開相同蛋白質（含混合肉類）。', 'muted'));
-    const shoppingNode = panel('採買清單');
-    state.week.forEach((day, index) => {
-      const row = el('div', null, 'week-row');
-      const menu = select(DATA.sets.map(s => [s.id, s.name]), day.set, value => { day.set = value; state.bought = {}; save(); drawShopping(); }); menu.disabled = !day.enabled; menu.setAttribute('aria-label', `${days[index]}套餐`);
-      append(row, checkbox(days[index], day.enabled, enabled => { day.enabled = enabled; menu.disabled = !enabled; state.bought = {}; save(); drawShopping(); }), menu); node.append(row);
+    function switcher(options, current, action, name) {
+      const group = el('div', null, 'plan-switch'); group.setAttribute('role', 'group'); group.setAttribute('aria-label', name);
+      for (const [value, text] of options) {
+        const control = button(text, () => action(value), `button${current === value ? ' primary' : ''}`);
+        control.setAttribute('aria-pressed', String(current === value)); group.append(control);
+      }
+      return group;
+    }
+    node.append(switcher([[0, '第 1 週'], [1, '第 2 週']], state.activeWeek, value => { state.activeWeek = value; save(); render(); }, '菜單週次'));
+    const date = el('input'); date.type = 'date'; date.value = state.weekStart;
+    date.addEventListener('change', () => {
+      if (!parseDate(date.value)) { date.setCustomValidity('請選擇有效日期'); date.reportValidity(); return; }
+      state.weekStart = date.value; save(); render();
     });
-    const breakfast = panel('本週早餐備餐');
-    breakfast.append(el('p', '每種早餐可選 0–3 批，每批 4 罐；0 批表示不做。食材會加進下方採買清單。', 'muted'));
+    node.append(label('第 1 週開始日期', date));
+    const week = state.weeks[state.activeWeek];
+    node.append(el('p', `第 ${state.activeWeek + 1} 週 · ${dayLabel(state.weekStart, state.activeWeek * 7)} 至 ${dayLabel(state.weekStart, state.activeWeek * 7 + 6)}`, 'muted'));
+    const auto = el('div', null, 'plan-switch');
+    for (const [target, text] of [[state.activeWeek, '排這一週'], ['both', '排兩週']]) auto.append(button(text, () => {
+      try { if (target === 'both' && !state.weeks[1].days.some(d => d.enabled)) state.weeks[1].days.forEach((d, i) => { d.enabled = state.weeks[0].days[i].enabled; }); state.weeks = autoPlan(state.weeks, target); state.bought = emptyBought(); save(); render(); }
+      catch (error) { notify(error.message); }
+    }, 'button secondary'));
+    append(node, el('h3', '自動排'), auto, el('p', '兩週盡量不重複主菜，相鄰料理晚上避開相同蛋白質（含混合肉類）。排這一週會保留另一週並一起檢查。', 'muted'));
+    const shoppingNode = panel();
+    function changed() { state.bought = emptyBought(); save(); drawShopping(); }
+    week.days.forEach((day, index) => {
+      const row = el('div', null, 'week-row'), dateText = dayLabel(state.weekStart, state.activeWeek * 7 + index);
+      const menu = select(DATA.sets.map(s => [s.id, s.name]), day.set, value => { day.set = value; changed(); });
+      menu.disabled = !day.enabled; menu.setAttribute('aria-label', `${dateText}套餐`);
+      append(row, checkbox(dateText, day.enabled, enabled => { day.enabled = enabled; menu.disabled = !enabled; changed(); }), menu); node.append(row);
+    });
+    const breakfast = panel(`第 ${state.activeWeek + 1} 週早餐備餐`);
+    breakfast.append(el('p', '每種早餐可選 0–3 批，每批 4 罐；0 批表示不做。食材會加進該週採買清單。', 'muted'));
     breakfast.append(el('p', '請依食譜冷藏期限分次製作；隔夜燕麥需提前冷藏 8–12 小時，3 天內吃完。', 'hint'));
     for (const recipe of DATA.recipes.filter(r => r.role === 'breakfast')) {
-      const input = select([0, 1, 2, 3].map(n => [String(n), `${n} 批 · ${n * 4} 罐`]), String(state.breakfast[recipe.id] || 0), value => {
-        state.breakfast[recipe.id] = breakfastBatches(Number(value)); state.bought = {}; save(); drawShopping();
+      const input = select([0, 1, 2, 3].map(n => [String(n), `${n} 批 · ${n * 4} 罐`]), String(week.breakfast[recipe.id] || 0), value => {
+        week.breakfast[recipe.id] = breakfastBatches(Number(value)); changed();
       });
       input.setAttribute('aria-label', `${recipe.name}批次`);
       const link = el('a', '看食譜 →'); link.href = `#recipe/${recipe.id}`;
@@ -551,7 +657,10 @@
     }
     function drawShopping() {
       shoppingNode.replaceChildren(el('h2', '採買清單'));
-      const items = shopping(state.week, state.fridge, state.breakfast);
+      shoppingNode.append(switcher([['week1', '第 1 週'], ['week2', '第 2 週'], ['total', '兩週合計']], state.shoppingMode, value => { state.shoppingMode = value; save(); drawShopping(); }, '採買範圍'));
+      const mode = state.shoppingMode, total = mode === 'total', bought = state.bought[mode];
+      const items = shoppingPlan(state.weeks, state.fridge)[mode];
+      shoppingNode.append(el('p', '冰箱庫存先供第 1 週使用，剩餘才扣第 2 週；兩週合計為扣庫存後的採買量。', 'muted'));
       if (!items.length) { shoppingNode.append(el('p', '先勾選料理晚上或設定早餐批次，就會出現採買清單。', 'empty')); return; }
       const groups = new Map();
       for (const item of items) {
@@ -559,17 +668,19 @@
         if (!groups.has(shop)) groups.set(shop, []); groups.get(shop).push(item);
       }
       for (const [shop, rows] of [...groups].sort((a, b) => Number(a[0] === '確認家裡還有') - Number(b[0] === '確認家裡還有'))) {
+        if (total && ['肉品', '海鮮'].includes(shop)) shoppingNode.append(el('p', '兩週一次買的話，第 2 週要用的肉和魚請分裝冷凍，前一晚移到冷藏退冰', 'hint'));
         shoppingNode.append(el('h3', shop));
         for (const item of rows) {
           const food = DATA.foods[item.id];
-          let amount = item.unknown ? `家裡有，請確認是否夠 ${fmt(item.required, 0)} g` : item.grams === 0 ? `冰箱足夠（本週需 ${fmt(item.required, 0)} g）` : `${fmt(item.grams, 0)} g`;
+          let amount = item.unknown ? `家裡有，請確認是否夠 ${fmt(item.required)} g` : item.grams === 0 ? `冰箱足夠（需 ${fmt(item.required)} g；採買 0 g）` : `${fmt(item.grams)} g`;
           if (food.unit && item.grams > 0 && !item.unknown) amount += ` · 約 ${fmt(item.grams / food.unitG)} ${food.unit}`;
-          if (item.pantry) amount = `本週約需 ${fmt(item.required, 0)} g，確認家裡還有`;
-          const check = checkbox(`${food.name}：${amount}`, !!state.bought[item.id], checked => { state.bought[item.id] = checked; save(); check.classList.toggle('bought', checked); });
-          check.classList.add('shopping-item'); check.classList.toggle('bought', !!state.bought[item.id]); shoppingNode.append(check);
+          if (item.pantry) amount = `${total ? '兩週' : '本週'}約需 ${fmt(item.required)} g，確認家裡還有`;
+          const check = checkbox(`${food.name}：${amount}`, !!bought[item.id], checked => { bought[item.id] = checked; save(); check.classList.toggle('bought', checked); });
+          if (total) check.children[1].append(el('small', `第 1 週 ${fmt(item.weeklyGrams[0])} g／第 2 週 ${fmt(item.weeklyGrams[1])} g`, 'weekly-amount'));
+          check.classList.add('shopping-item'); check.classList.toggle('bought', !!bought[item.id]); shoppingNode.append(check);
         }
       }
-      shoppingNode.append(el('p', '已扣除冰箱填寫的現有克數一次；食材是可食部分生重，實際購買請考慮去皮、去骨耗損。更改菜單或庫存時會重設已買標記。', 'hint'));
+      shoppingNode.append(el('p', '食材是可食部分生重，實際購買請考慮去皮、去骨耗損。更改菜單、早餐或庫存時會重設各範圍已買標記；切換範圍會保留勾選。', 'hint'));
     }
     append(content, node, breakfast, shoppingNode); drawShopping();
   }
